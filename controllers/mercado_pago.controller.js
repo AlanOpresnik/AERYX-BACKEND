@@ -629,9 +629,7 @@ const mercadoPagoWebhook = async (req, res) => {
 
     await order.save();
 
-    if (internalStatus === "approved" && !wasAlreadyPaid) {
-      await sendOrderConfirmationEmail(order);
-    }
+    await sendOrderConfirmationEmail(order);
 
     console.log(
       `WEBHOOK MP: order ${order._id} actualizada -> payment: ${internalStatus} / order: ${order.status}`,
