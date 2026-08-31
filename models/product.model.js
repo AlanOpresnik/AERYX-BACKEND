@@ -21,6 +21,16 @@ const productSchema = new mongoose.Schema({
   type: { type: String, required: true },
   sizes: [{ type: String, required: true }],
   stock: { type: Number, default: 0, min: 0 },
+
+  
+  // =====================================================
+  // SHIPPING (para cotizar con OCA)
+  // =====================================================
+  // Opcionales: si no están cargados, el shipping controller
+  // usa un default por variable de entorno.
+
+  weightKg: { type: Number, required: false, min: 0 },
+  volumeM3: { type: Number, required: false, min: 0 },
 });
 
 module.exports = mongoose.model("Product", productSchema);

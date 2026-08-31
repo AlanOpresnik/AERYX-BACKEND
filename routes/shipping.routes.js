@@ -4,6 +4,6 @@ const shippingController = require("../controllers/shipping.controller");
 
 router.get("/autocomplete", shippingController.autocompleteAddress);
 
-router.get("/evaluate", shippingController.evaluateShipping);
+router.post("/evaluate", shippingController.evaluateShipping);
 
 module.exports = router;

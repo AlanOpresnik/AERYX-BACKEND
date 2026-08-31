@@ -1,5 +1,12 @@
 const axios = require("axios");
+
 const PostalCode = require("../models/postalCode");
+
+const enviopackService = require("../services/envioPack");
+
+const {
+  getProvinceIsoCode,
+} = require("../services/provinciasAr");
 
 // =====================================================
 // CONFIGURACIÓN
@@ -7,67 +14,50 @@ const PostalCode = require("../models/postalCode");
 
 const SHIPPING_ORIGIN = {
   lat: Number(
-    process.env.SHIPPING_ORIGIN_LAT || -34.6647,
+    process.env.SHIPPING_ORIGIN_LAT ||
+      -34.6647,
   ),
+
   lon: Number(
-    process.env.SHIPPING_ORIGIN_LON || -58.7101,
+    process.env.SHIPPING_ORIGIN_LON ||
+      -58.7101,
   ),
 };
 
-const DIRECT_SHIPPING_MAX_KM = 30;
+const DIRECT_SHIPPING_MAX_KM =
+  Number(
+    process.env.DIRECT_SHIPPING_MAX_KM ||
+      4,
+  );
+
+const DEFAULT_WEIGHT_KG =
+  Number(
+    process.env.SHIPPING_DEFAULT_WEIGHT_KG ||
+      1,
+  );
+
+const DEFAULT_PACKAGE_CM =
+  process.env.SHIPPING_DEFAULT_PACKAGE_CM ||
+  "20x20x20";
 
 const GEOREF_DIRECCIONES_URL =
   "https://apis.datos.gob.ar/georef/api/direcciones";
 
 // =====================================================
-// HAVERSINE
+// HELPERS
 // =====================================================
 
-function haversine(lat1, lon1, lat2, lon2) {
-  const toRad = (value) =>
-    (value * Math.PI) / 180;
-
-  const R = 6371;
-
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) *
-      Math.cos(toRad(lat2)) *
-      Math.sin(dLon / 2) ** 2;
-
-  const c =
-    2 *
-    Math.atan2(
-      Math.sqrt(a),
-      Math.sqrt(1 - a),
-    );
-
-  return R * c;
+function normalize(value) {
+  return (value || "")
+    .toString()
+    .normalize("NFD")
+    .replace(
+      /[\u0300-\u036f]/g,
+      "",
+    )
+    .toLowerCase()
+    .trim();
 }
-
-function sameAddressNumber(
-  resultNumber,
-  requestedNumber,
-) {
-  if (!resultNumber || !requestedNumber) {
-    return false;
-  }
-
-  const result = String(resultNumber)
-    .replace(/\D/g, "");
-
-  const requested = String(requestedNumber)
-    .replace(/\D/g, "");
-
-  return result === requested;
-}
-
-// =====================================================
-// ESCAPAR REGEX
-// =====================================================
 
 function escapeRegex(value) {
   return value.replace(
@@ -76,50 +66,63 @@ function escapeRegex(value) {
   );
 }
 
-// =====================================================
-// NORMALIZAR TEXTO
-// =====================================================
+function haversine(
+  lat1,
+  lon1,
+  lat2,
+  lon2,
+) {
+  const toRad = (v) =>
+    (v * Math.PI) / 180;
 
-function normalize(value) {
-  return (value || "")
-    .toString()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .trim();
+  const R = 6371;
+
+  const dLat = toRad(
+    lat2 - lat1,
+  );
+
+  const dLon = toRad(
+    lon2 - lon1,
+  );
+
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) *
+      Math.cos(toRad(lat2)) *
+      Math.sin(dLon / 2) ** 2;
+
+  return (
+    R *
+    2 *
+    Math.atan2(
+      Math.sqrt(a),
+      Math.sqrt(1 - a),
+    )
+  );
 }
 
-// =====================================================
-// BUSCAR POSTAL EN DB
-// =====================================================
-
-async function findPostalRecord({
-  postalCode,
-  city,
-}) {
-  let record = null;
-
-  if (postalCode) {
-    record = await PostalCode.findOne({
-      postalCode,
-    });
+function sameAddressNumber(
+  resultNumber,
+  requestedNumber,
+) {
+  if (
+    !resultNumber ||
+    !requestedNumber
+  ) {
+    return false;
   }
 
-  if (!record && city) {
-    record = await PostalCode.findOne({
-      city: {
-        $regex: `^${escapeRegex(city)}$`,
-        $options: "i",
-      },
-    });
-  }
-
-  return record;
+  return (
+    String(resultNumber).replace(
+      /\D/g,
+      "",
+    ) ===
+    String(requestedNumber).replace(
+      /\D/g,
+      "",
+    )
+  );
 }
-
-// =====================================================
-// VALIDAR LOCALIDAD
-// =====================================================
 
 function sameCity(
   resultCity,
@@ -132,11 +135,11 @@ function sameCity(
     return false;
   }
 
-  const a =
-    normalize(resultCity);
+  const a = normalize(resultCity);
 
-  const b =
-    normalize(requestedCity);
+  const b = normalize(
+    requestedCity,
+  );
 
   return (
     a === b ||
@@ -146,25 +149,178 @@ function sameCity(
 }
 
 // =====================================================
-// GEOREF (datos.gob.ar)
+// DIRECCIÓN
 // =====================================================
 //
-// Única fuente de geocodificación. Usa la nomenclatura
-// oficial (INDEC / Correo Argentino) para direcciones
-// de Argentina, incluyendo interpolación de alturas.
+// Si frontend manda:
 //
-// Importante: NO mandamos "departamento" y
-// "localidad_censal" en la misma consulta con el mismo
-// valor. Georef matchea por cualquiera de los dos campos
-// que coincida, y si ambos coinciden (como pasa en Merlo,
-// donde el partido y la localidad se llaman igual) te
-// devuelve la MISMA dirección duplicada, una vez por cada
-// campo que matcheó — eso era lo que estaba generando la
-// key duplicada en el front. Por eso probamos primero por
-// "departamento" y solo si no hay resultados probamos por
-// "localidad_censal".
+// "PUENTE MARQUEZ 978"
+// número: "978"
+//
+// Enviopack debe recibir:
+//
+// calle: "PUENTE MARQUEZ"
+// numero: "978"
 //
 // =====================================================
+
+function cleanStreetName(
+  street,
+  number,
+) {
+  let result = String(
+    street || "",
+  ).trim();
+
+  const cleanNumber = String(
+    number || "",
+  )
+    .replace(/\D/g, "")
+    .trim();
+
+  if (!result || !cleanNumber) {
+    return result;
+  }
+
+  // Si termina exactamente en el número
+  // lo removemos.
+  const regex = new RegExp(
+    `\\s+${escapeRegex(
+      cleanNumber,
+    )}\\s*$`,
+  );
+
+  result = result.replace(
+    regex,
+    "",
+  );
+
+  return result.trim();
+}
+
+// =====================================================
+// POSTAL CODE
+// =====================================================
+
+async function findPostalRecord({
+  postalCode,
+  city,
+}) {
+  if (postalCode) {
+    const byPostalCode =
+      await PostalCode.findOne({
+        postalCode,
+      });
+
+    if (byPostalCode) {
+      return byPostalCode;
+    }
+  }
+
+  if (city) {
+    return PostalCode.findOne({
+      city: {
+        $regex: `^${escapeRegex(
+          city,
+        )}$`,
+        $options: "i",
+      },
+    });
+  }
+
+  return null;
+}
+
+// =====================================================
+// GEOREF
+// =====================================================
+
+async function queryGeoref({
+  direccion,
+  city,
+  province,
+}) {
+  const baseParams = {
+    direccion,
+
+    provincia:
+      province ||
+      "Buenos Aires",
+
+    max: 10,
+
+    campos: "completo",
+  };
+
+  try {
+    if (city) {
+      const byDepartamento =
+        await axios.get(
+          GEOREF_DIRECCIONES_URL,
+          {
+            params: {
+              ...baseParams,
+              departamento: city,
+            },
+
+            timeout: 6000,
+          },
+        );
+
+      const resultsByDepartamento =
+        byDepartamento.data
+          ?.direcciones || [];
+
+      if (
+        resultsByDepartamento.length
+      ) {
+        return resultsByDepartamento;
+      }
+
+      const byLocalidad =
+        await axios.get(
+          GEOREF_DIRECCIONES_URL,
+          {
+            params: {
+              ...baseParams,
+              localidad_censal:
+                city,
+            },
+
+            timeout: 6000,
+          },
+        );
+
+      return (
+        byLocalidad.data
+          ?.direcciones || []
+      );
+    }
+
+    const response =
+      await axios.get(
+        GEOREF_DIRECCIONES_URL,
+        {
+          params: baseParams,
+          timeout: 6000,
+        },
+      );
+
+    return (
+      response.data?.direcciones ||
+      []
+    );
+  } catch (error) {
+    console.error(
+      "[Georef] request falló:",
+      error.response?.status,
+      error.response?.data ||
+        error.message,
+    );
+
+    return [];
+  }
+}
 
 async function searchGeoref({
   address,
@@ -172,87 +328,62 @@ async function searchGeoref({
   city,
   province,
 }) {
-  const baseParams = {
-    direccion: `${address} ${addressNumber}`,
-    provincia: province || "Buenos Aires",
-    max: 10,
-    campos: "completo",
-  };
+  console.log(
+    "[Georef] buscando con altura:",
+    {
+      address,
+      addressNumber,
+      city,
+      province,
+    },
+  );
 
-  try {
-    if (city) {
-      const byDepartamento = await axios.get(
-        GEOREF_DIRECCIONES_URL,
-        {
-          params: {
-            ...baseParams,
-            departamento: city,
-          },
-          timeout: 6000,
-        },
-      );
+  const withNumber =
+    await queryGeoref({
+      direccion: `${address} ${addressNumber}`,
+      city,
+      province,
+    });
 
-      const resultsByDepartamento =
-        byDepartamento.data?.direcciones || [];
+  console.log(
+    `[Georef] con altura -> ${withNumber.length} resultados`,
+  );
 
-      if (resultsByDepartamento.length) {
-        console.log(
-          "GEOREF RESULTS (por departamento):",
-          resultsByDepartamento.map((r) => ({
-            nomenclatura: r.nomenclatura,
-            altura: r.altura,
-            lat: r.ubicacion?.lat,
-            lon: r.ubicacion?.lon,
-          })),
-        );
-
-        return resultsByDepartamento;
-      }
-
-      const byLocalidad = await axios.get(
-        GEOREF_DIRECCIONES_URL,
-        {
-          params: {
-            ...baseParams,
-            localidad_censal: city,
-          },
-          timeout: 6000,
-        },
-      );
-
-      const resultsByLocalidad =
-        byLocalidad.data?.direcciones || [];
-
-      console.log(
-        "GEOREF RESULTS (por localidad_censal):",
-        resultsByLocalidad.map((r) => ({
-          nomenclatura: r.nomenclatura,
-          altura: r.altura,
-          lat: r.ubicacion?.lat,
-          lon: r.ubicacion?.lon,
-        })),
-      );
-
-      return resultsByLocalidad;
-    }
-
-    const response = await axios.get(
-      GEOREF_DIRECCIONES_URL,
-      {
-        params: baseParams,
-        timeout: 6000,
-      },
+  if (withNumber.length) {
+    return withNumber.map(
+      (item) => ({
+        ...item,
+        __approximate: false,
+      }),
     );
-
-    return response.data?.direcciones || [];
-  } catch (error) {
-    console.error(
-      "Error consultando Georef direcciones:",
-      error.message,
-    );
-
-    return [];
   }
+
+  console.log(
+    "[Georef] reintentando solo por nombre de calle:",
+    {
+      address,
+      city,
+      province,
+    },
+  );
+
+  const streetOnly =
+    await queryGeoref({
+      direccion: address,
+      city,
+      province,
+    });
+
+  console.log(
+    `[Georef] solo calle -> ${streetOnly.length} resultados`,
+  );
+
+  return streetOnly.map(
+    (item) => ({
+      ...item,
+      __approximate: true,
+    }),
+  );
 }
 
 function normalizeGeorefResult(
@@ -260,8 +391,13 @@ function normalizeGeorefResult(
   index,
   fallbackPostalCode,
 ) {
-  const lat = Number(item.ubicacion?.lat);
-  const lon = Number(item.ubicacion?.lon);
+  const lat = Number(
+    item.ubicacion?.lat,
+  );
+
+  const lon = Number(
+    item.ubicacion?.lon,
+  );
 
   if (
     !Number.isFinite(lat) ||
@@ -271,49 +407,48 @@ function normalizeGeorefResult(
   }
 
   return {
-    // El índice va siempre en el id para garantizar que
-    // sea único, incluso si Georef llegara a devolver dos
-    // entradas con la misma calle+altura (por ejemplo con
-    // distinto piso/depto).
-    id: `georef-${item.calle?.id || "sc"}-${
+    id: `georef-${
+      item.calle?.id || "sc"
+    }-${
       item.altura?.valor || "0"
     }-${index}`,
 
-    placeId: null,
+    address:
+      item.calle?.nombre || "",
 
-    address: item.calle?.nombre || "",
+    addressNumber:
+      item.altura?.valor
+        ? String(
+            item.altura.valor,
+          )
+        : "",
 
-    addressNumber: item.altura?.valor
-      ? String(item.altura.valor)
-      : "",
-
-    fullAddress: item.nomenclatura || "",
+    fullAddress:
+      item.nomenclatura || "",
 
     city:
-      item.localidad_censal?.nombre ||
+      item.localidad_censal
+        ?.nombre ||
       item.departamento?.nombre ||
       "",
 
-    province: item.provincia?.nombre || "",
+    province:
+      item.provincia?.nombre ||
+      "",
 
-    postalCode: fallbackPostalCode || "",
+    postalCode:
+      fallbackPostalCode || "",
 
     lat,
+
     lon,
 
-    importance: 1,
-
-    type: "georef_direccion",
-
-    source: "georef",
-
-    approximate: false,
+    approximate:
+      Boolean(
+        item.__approximate,
+      ),
   };
 }
-
-// =====================================================
-// BUSCAR DIRECCIÓN
-// =====================================================
 
 async function geocodeAddress({
   address,
@@ -322,614 +457,951 @@ async function geocodeAddress({
   postalCode,
   province,
 }) {
-  const raw = await searchGeoref({
-    address,
-    addressNumber,
-    city,
-    province,
-  });
+  const raw =
+    await searchGeoref({
+      address,
+      addressNumber,
+      city,
+      province,
+    });
 
-  const normalized = raw
-    .map((item, index) =>
-      normalizeGeorefResult(item, index, postalCode),
-    )
-    .filter(Boolean);
+  const normalized =
+    raw
+      .map(
+        (
+          item,
+          index,
+        ) =>
+          normalizeGeorefResult(
+            item,
+            index,
+            postalCode,
+          ),
+      )
+      .filter(Boolean);
 
   if (!normalized.length) {
     return [];
   }
 
-  // =====================================================
-  // DEDUPE
-  // =====================================================
-  //
-  // Por las dudas: si dos entradas apuntan exactamente a
-  // la misma calle + altura + coordenadas, nos quedamos
-  // con una sola.
-  //
-  // =====================================================
-
   const seen = new Set();
 
-  const deduped = normalized.filter((result) => {
-    const key = `${normalize(result.address)}|${
-      result.addressNumber
-    }|${result.lat.toFixed(6)}|${result.lon.toFixed(6)}`;
+  const deduped =
+    normalized.filter(
+      (result) => {
+        const key = `${normalize(
+          result.address,
+        )}|${
+          result.addressNumber
+        }|${result.lat.toFixed(
+          6,
+        )}|${result.lon.toFixed(
+          6,
+        )}`;
 
-    if (seen.has(key)) {
-      return false;
-    }
+        if (seen.has(key)) {
+          return false;
+        }
 
-    seen.add(key);
+        seen.add(key);
 
-    return true;
-  });
+        return true;
+      },
+    );
 
-  // =====================================================
-  // LOCALIDAD
-  // =====================================================
+  const byCity =
+    deduped.filter(
+      (result) =>
+        sameCity(
+          result.city,
+          city,
+        ),
+    );
 
-  const byCity = deduped.filter((result) =>
-    sameCity(result.city, city),
-  );
+  const filtered =
+    byCity.length
+      ? byCity
+      : deduped;
 
-  // Si Georef ya filtró por departamento/localidad al
-  // consultar, esto casi siempre va a matchear. Si por
-  // algún motivo el nombre de localidad que devuelve
-  // Georef no coincide textualmente con lo que escribió
-  // el usuario, no descartamos los resultados: seguimos
-  // con lo que vino.
-  const filtered = byCity.length
-    ? byCity
-    : deduped;
-
-  // =====================================================
-  // ALTURA EXACTA
-  // =====================================================
-
-  const exactMatches = filtered.filter((result) =>
-    sameAddressNumber(
-      result.addressNumber,
-      addressNumber,
-    ),
-  );
+  const exactMatches =
+    filtered.filter(
+      (result) =>
+        sameAddressNumber(
+          result.addressNumber,
+          addressNumber,
+        ),
+    );
 
   if (exactMatches.length) {
     return exactMatches;
   }
 
-  // =====================================================
-  // SIN ALTURA EXACTA: APROXIMADO
-  // =====================================================
+  return filtered
+    .slice(0, 5)
+    .map((result) => ({
+      ...result,
 
-  return filtered.slice(0, 5).map((result) => ({
-    ...result,
-    addressNumber,
-    approximate: true,
-    source: "georef_street_level",
-  }));
+      addressNumber,
+
+      approximate: true,
+    }));
 }
 
 // =====================================================
-// AUTOCOMPLETE / BUSCADOR
+// PAQUETE PARA COTIZAR
 // =====================================================
 
-exports.autocompleteAddress = async (
-  req,
-  res,
-) => {
-  try {
-    const address = (
-      req.query.address || ""
-    )
-      .toString()
-      .trim();
-
-    const addressNumber = (
-      req.query.address_number ||
-      ""
-    )
-      .toString()
-      .trim();
-
-    const city = (
-      req.query.city || ""
-    )
-      .toString()
-      .trim();
-
-    const postalCode = (
-      req.query.postal_code ||
-      ""
-    )
-      .toString()
-      .trim();
-
-    const province = (
-      req.query.province ||
-      ""
-    )
-      .toString()
-      .trim();
-
-    // Necesitamos al menos calle,
-    // número y localidad.
-    if (
-      !address ||
-      !addressNumber ||
-      !city
-    ) {
-      return res.json({
-        success: true,
-        results: [],
-      });
-    }
-
-    const results =
-      await geocodeAddress({
-        address,
-        addressNumber,
-        city,
-        postalCode,
-        province,
-      });
-
-    return res.json({
-      success: true,
-
-      results,
-    });
-  } catch (error) {
-    console.error(
-      "Error buscando dirección:",
-      error.response?.data ||
-        error.message,
+function parsePackageDimensions(
+  packageString,
+) {
+  const [
+    alto,
+    ancho,
+    largo,
+  ] = String(
+    packageString ||
+      DEFAULT_PACKAGE_CM,
+  )
+    .split("x")
+    .map((value) =>
+      Number(value),
     );
 
-    return res.status(500).json({
-      success: false,
+  return {
+    alto:
+      Number.isFinite(alto) &&
+      alto > 0
+        ? Math.round(alto)
+        : 20,
 
-      error:
-        "No se pudieron buscar las direcciones.",
-    });
+    ancho:
+      Number.isFinite(ancho) &&
+      ancho > 0
+        ? Math.round(ancho)
+        : 20,
+
+    largo:
+      Number.isFinite(largo) &&
+      largo > 0
+        ? Math.round(largo)
+        : 20,
+  };
+}
+
+// =====================================================
+// PAQUETE PARA ENVIOPACK
+// =====================================================
+//
+// IMPORTANTE:
+//
+// /cotizar usa:
+//
+// "20x20x20"
+//
+// /envios usa:
+//
+// [
+//   {
+//     alto: 20,
+//     ancho: 20,
+//     largo: 20,
+//     peso: 1
+//   }
+// ]
+//
+// =====================================================
+
+function buildShipmentPackagesFromItems(
+  items = [],
+) {
+  if (
+    !Array.isArray(items) ||
+    !items.length
+  ) {
+    const dimensions =
+      parsePackageDimensions(
+        DEFAULT_PACKAGE_CM,
+      );
+
+    return [
+      {
+        ...dimensions,
+
+        peso:
+          Number(
+            DEFAULT_WEIGHT_KG,
+          ) || 1,
+
+        descripcion_primera_linea:
+          "Pedido Aeryx",
+
+        descripcion_segunda_linea:
+          "",
+      },
+    ];
   }
-};
+
+  let totalWeightKg = 0;
+
+  let totalVolumeM3 = 0;
+
+  let productNames = [];
+
+  for (const item of items) {
+    const quantity =
+      Number(
+        item.quantity,
+      ) || 1;
+
+    const weight =
+      Number(
+        item.weightKg,
+      ) ||
+      Number(
+        item.weight,
+      ) ||
+      DEFAULT_WEIGHT_KG;
+
+    totalWeightKg +=
+      weight * quantity;
+
+    const volume =
+      Number(
+        item.volumeM3,
+      ) || 0;
+
+    totalVolumeM3 +=
+      volume * quantity;
+
+    if (item.name) {
+      productNames.push(
+        `${quantity}x ${item.name}`,
+      );
+    }
+  }
+
+  // ===================================================
+  // SI NO TENEMOS VOLUMEN
+  // ===================================================
+
+  if (
+    !totalVolumeM3 ||
+    totalVolumeM3 <= 0
+  ) {
+    const dimensions =
+      parsePackageDimensions(
+        DEFAULT_PACKAGE_CM,
+      );
+
+    return [
+      {
+        ...dimensions,
+
+        peso: Number(
+          totalWeightKg ||
+            DEFAULT_WEIGHT_KG,
+        ).toFixed(2),
+
+        descripcion_primera_linea:
+          productNames
+            .join(" | ")
+            .slice(0, 50),
+
+        descripcion_segunda_linea:
+          "",
+      },
+    ];
+  }
+
+  // ===================================================
+  // ESTIMAMOS UN ÚNICO PAQUETE CÚBICO
+  // ===================================================
+
+  const totalVolumeCm3 =
+    totalVolumeM3 * 1_000_000;
+
+  const side =
+    Math.max(
+      1,
+      Math.round(
+        Math.cbrt(
+          totalVolumeCm3,
+        ),
+      ),
+    );
+
+  return [
+    {
+      alto: side,
+
+      ancho: side,
+
+      largo: side,
+
+      peso: Number(
+        totalWeightKg ||
+          DEFAULT_WEIGHT_KG,
+      ).toFixed(2),
+
+      descripcion_primera_linea:
+        productNames
+          .join(" | ")
+          .slice(0, 50),
+
+      descripcion_segunda_linea:
+        "",
+    },
+  ];
+}
 
 // =====================================================
-// EVALUAR SHIPPING
+// PAQUETE PARA COTIZAR
 // =====================================================
 
-exports.evaluateShipping = async (
-  req,
-  res,
-) => {
-  try {
-    // =================================================
-    // DATOS
-    // =================================================
+function buildPackageFromItems(
+  items = [],
+) {
+  const packages =
+    buildShipmentPackagesFromItems(
+      items,
+    );
 
-    const address = (
-      req.body?.address ||
-      req.query.address ||
-      ""
-    )
-      .toString()
-      .trim();
+  return {
+    pesoKg: packages.reduce(
+      (total, item) =>
+        total +
+        Number(item.peso || 0),
+      0,
+    ),
 
-    const addressNumber = (
-      req.body?.addressNumber ||
-      req.body?.address_number ||
-      req.query.addressNumber ||
-      req.query.address_number ||
-      ""
-    )
-      .toString()
-      .trim();
+    paquetes: packages
+      .map(
+        (item) =>
+          `${item.alto}x${item.ancho}x${item.largo}`,
+      )
+      .join(","),
+  };
+}
 
-    const betweenStreet1 = (
-      req.body?.betweenStreet1 ||
-      req.body?.between_street_1 ||
-      req.query.betweenStreet1 ||
-      req.query.between_street_1 ||
-      ""
-    )
-      .toString()
-      .trim();
+// =====================================================
+// COTIZACIÓN ENVIOPACK
+// =====================================================
 
-    const betweenStreet2 = (
-      req.body?.betweenStreet2 ||
-      req.body?.between_street_2 ||
-      req.query.betweenStreet2 ||
-      req.query.between_street_2 ||
-      ""
-    )
-      .toString()
-      .trim();
+async function quoteWithEnviopack({
+  province,
+  postalCode,
+  items,
+}) {
+  const provinciaId =
+    getProvinceIsoCode(
+      province,
+    );
 
-    const city = (
-      req.body?.city ||
-      req.query.city ||
-      ""
-    )
-      .toString()
-      .trim();
+  if (!provinciaId) {
+    return {
+      error: `No reconocemos la provincia "${province}" para cotizar con Enviopack.`,
+    };
+  }
 
-    const postalCode = (
-      req.body?.postalCode ||
-      req.body?.postal_code ||
-      req.query.postalCode ||
-      req.query.postal_code ||
-      ""
-    )
-      .toString()
-      .trim();
+  const {
+    pesoKg,
+    paquetes,
+  } =
+    buildPackageFromItems(
+      items,
+    );
 
-    const province = (
-      req.body?.province ||
-      req.query.province ||
-      ""
-    )
-      .toString()
-      .trim();
+  console.log(
+    "[Enviopack] DATOS COTIZACIÓN:",
+    {
+      provinciaId,
+      postalCode,
+      pesoKg,
+      paquetes,
+    },
+  );
 
-    // =================================================
-    // COORDENADAS DEL FRONT
-    // =================================================
+  const cotizaciones =
+    await enviopackService.quoteHomeDelivery(
+      {
+        provinciaId,
 
-    const latitudeRaw =
-      req.body?.latitude ??
-      req.query.latitude;
-
-    const longitudeRaw =
-      req.body?.longitude ??
-      req.query.longitude;
-
-    const latitude =
-      latitudeRaw !== undefined
-        ? Number(latitudeRaw)
-        : null;
-
-    const longitude =
-      longitudeRaw !== undefined
-        ? Number(longitudeRaw)
-        : null;
-
-    const placeId = (
-      req.body?.placeId ||
-      req.body?.place_id ||
-      req.query.placeId ||
-      req.query.place_id ||
-      ""
-    )
-      .toString()
-      .trim();
-
-    const clientMarkedApproximate =
-      req.body?.approximate === true ||
-      req.query.approximate === "true";
-
-    // =================================================
-    // VALIDACIONES
-    // =================================================
-
-    if (
-      !address ||
-      !addressNumber
-    ) {
-      return res.status(400).json({
-        success: false,
-
-        error:
-          "Se requiere calle y número.",
-      });
-    }
-
-    if (
-      !city ||
-      !postalCode
-    ) {
-      return res.status(400).json({
-        success: false,
-
-        error:
-          "Se requiere localidad y código postal.",
-      });
-    }
-
-    // =================================================
-    // POSTAL
-    // =================================================
-
-    const record =
-      await findPostalRecord({
-        postalCode,
-        city,
-      });
-
-    const usedProvince =
-      record?.province ||
-      province ||
-      "Buenos Aires";
-
-    // =================================================
-    // COORDENADAS
-    // =================================================
-
-    let destinationCoords =
-      null;
-
-    let geocodingMethod =
-      null;
-
-    let approximate =
-      clientMarkedApproximate;
-
-    // -------------------------------------------------
-    // PRIMERA PRIORIDAD:
-    // COORDENADAS SELECCIONADAS POR EL USUARIO
-    // -------------------------------------------------
-
-    if (
-      Number.isFinite(latitude) &&
-      Number.isFinite(longitude)
-    ) {
-      destinationCoords = {
-        lat: latitude,
-        lon: longitude,
-
-        displayName: [
-          address,
-          addressNumber,
-          city,
+        codigoPostal:
           postalCode,
-        ]
-          .filter(Boolean)
-          .join(", "),
-      };
 
-      geocodingMethod =
-        "selected_address";
-    }
+        pesoKg,
 
-    // -------------------------------------------------
-    // SEGUNDA PRIORIDAD:
-    // BUSCAR DIRECCIÓN (GEOREF)
-    // -------------------------------------------------
+        paquetes,
+      },
+    );
 
-    if (
-      !destinationCoords
-    ) {
+  if (
+    !Array.isArray(
+      cotizaciones,
+    ) ||
+    !cotizaciones.length
+  ) {
+    return {
+      error:
+        "Enviopack no devolvió cotizaciones para ese destino.",
+    };
+  }
+
+  const cheapest =
+    cotizaciones[0];
+
+  console.log(
+    "====================================",
+  );
+
+  console.log(
+    "[Enviopack] TODAS LAS COTIZACIONES:",
+  );
+
+  console.log(
+    JSON.stringify(
+      cotizaciones,
+      null,
+      2,
+    ),
+  );
+
+  console.log(
+    "====================================",
+  );
+
+  console.log(
+    "[Enviopack] COTIZACIÓN SELECCIONADA:",
+    JSON.stringify(
+      cheapest,
+      null,
+      2,
+    ),
+  );
+
+  return {
+    shipping: {
+      id: `enviopack-${
+        cheapest.correo || "correo"
+      }-${
+        cheapest.servicio ||
+        "standard"
+      }-${cheapest.id || 0}`,
+
+      title:
+        cheapest.nombre ||
+        cheapest.descripcion ||
+        `Envío ${
+          cheapest.correo || ""
+        }`.trim() ||
+        "Envío a domicilio",
+
+      description:
+        "Envío a domicilio gestionado a través de Enviopack.",
+
+      price: Number(
+        cheapest.valor,
+      ),
+
+      service:
+        cheapest.servicio ||
+        cheapest.service ||
+        null,
+
+      carrier:
+        cheapest.correo ||
+        cheapest.carrier ||
+        null,
+
+      carrierName:
+        cheapest.nombre_correo ||
+        cheapest.carrier_name ||
+        cheapest.correo_nombre ||
+        null,
+
+      estimatedDelivery:
+        cheapest.horas_entrega
+          ? `${cheapest.horas_entrega} horas`
+          : "A coordinar",
+    },
+
+    allQuotes:
+      cotizaciones,
+  };
+}
+
+// =====================================================
+// AUTOCOMPLETE
+// =====================================================
+
+exports.autocompleteAddress =
+  async (
+    req,
+    res,
+  ) => {
+    try {
+      const address = (
+        req.query.address || ""
+      )
+        .toString()
+        .trim();
+
+      const addressNumber = (
+        req.query.address_number ||
+        ""
+      )
+        .toString()
+        .trim();
+
+      const city = (
+        req.query.city || ""
+      )
+        .toString()
+        .trim();
+
+      const postalCode = (
+        req.query.postal_code ||
+        ""
+      )
+        .toString()
+        .trim();
+
+      const province = (
+        req.query.province || ""
+      )
+        .toString()
+        .trim();
+
+      if (
+        !address ||
+        !addressNumber ||
+        !city
+      ) {
+        return res.json({
+          success: true,
+
+          results: [],
+        });
+      }
+
       const results =
         await geocodeAddress({
           address,
+
           addressNumber,
+
           city,
+
           postalCode,
-          province:
-            usedProvince,
+
+          province,
         });
 
-      const selected =
-        results[0];
+      return res.json({
+        success: true,
 
-      if (selected) {
-        destinationCoords = {
-          lat: selected.lat,
+        results,
+      });
+    } catch (error) {
+      console.error(
+        "Error buscando dirección:",
+        error.response?.data ||
+          error.message,
+      );
 
-          lon: selected.lon,
-
-          displayName:
-            selected.fullAddress,
-        };
-
-        geocodingMethod =
-          selected.approximate
-            ? "address_approximate"
-            : "address";
-
-        approximate =
-          Boolean(selected.approximate);
-      }
-    }
-
-    if (
-      !destinationCoords
-    ) {
-      return res.status(422).json({
+      return res.status(500).json({
         success: false,
 
         error:
-          "No pudimos localizar esa dirección en Georef.",
-
-        message:
-          "Revisá la calle, número, localidad y código postal.",
-
-        record: record
-          ? {
-              postalCode:
-                record.postalCode,
-
-              city:
-                record.city,
-
-              province:
-                record.province,
-
-              zone:
-                record.zone,
-            }
-          : null,
+          "No se pudieron buscar las direcciones.",
       });
     }
+  };
 
-    // =================================================
-    // DISTANCIA
-    // =================================================
+// =====================================================
+// EVALUATE SHIPPING
+// =====================================================
 
-    const distanceKm =
-      haversine(
-        SHIPPING_ORIGIN.lat,
-        SHIPPING_ORIGIN.lon,
-        destinationCoords.lat,
-        destinationCoords.lon,
-      );
+exports.evaluateShipping =
+  async (
+    req,
+    res,
+  ) => {
+    try {
+      const body =
+        req.body || {};
 
-    const roundedDistance =
-      Number(
-        distanceKm.toFixed(2),
-      );
+      const query =
+        req.query || {};
 
-    // =================================================
-    // DECISIÓN
-    // =================================================
+      const address = (
+        body.address ||
+        query.address ||
+        ""
+      )
+        .toString()
+        .trim();
 
-    const isDirectShipping =
-      distanceKm <=
-      DIRECT_SHIPPING_MAX_KM;
+      const addressNumber = (
+        body.addressNumber ||
+        body.address_number ||
+        query.address_number ||
+        ""
+      )
+        .toString()
+        .trim();
 
-    const decision =
-      isDirectShipping
-        ? "near"
-        : "oca";
+      const city = (
+        body.city ||
+        query.city ||
+        ""
+      )
+        .toString()
+        .trim();
 
-    // =================================================
-    // SHIPPING
-    // =================================================
+      const postalCode = (
+        body.postalCode ||
+        body.postal_code ||
+        query.postal_code ||
+        ""
+      )
+        .toString()
+        .trim();
 
-    const shipping =
-      isDirectShipping
-        ? {
-            id: "directo",
+      const province = (
+        body.province ||
+        query.province ||
+        ""
+      )
+        .toString()
+        .trim();
 
-            title:
-              "Envío Aeryx",
+      const items =
+        Array.isArray(
+          body.items,
+        )
+          ? body.items
+          : [];
 
-            description:
-              "Entrega directa desde nuestro centro de despacho.",
+      const latitude =
+        body.latitude !==
+        undefined
+          ? Number(
+              body.latitude,
+            )
+          : null;
 
-            price: 5000,
+      const longitude =
+        body.longitude !==
+        undefined
+          ? Number(
+              body.longitude,
+            )
+          : null;
 
-            estimatedDelivery:
-              "24-48 horas",
-          }
-        : {
-            id: "oca",
+      const clientMarkedApproximate =
+        body.approximate === true;
 
-            title:
-              "Envío por OCA",
+      if (
+        !address ||
+        !addressNumber
+      ) {
+        return res.status(400).json({
+          success: false,
 
-            description:
-              "El envío será gestionado mediante OCA.",
+          error:
+            "Se requiere calle y número.",
+        });
+      }
 
-            price: null,
+      if (
+        !city ||
+        !postalCode
+      ) {
+        return res.status(400).json({
+          success: false,
 
-            estimatedDelivery:
-              "Según localidad",
-          };
+          error:
+            "Se requiere localidad y código postal.",
+        });
+      }
 
-    // =================================================
-    // RESPONSE
-    // =================================================
+      const record =
+        await findPostalRecord({
+          postalCode,
 
-    return res.json({
-      success: true,
+          city,
+        });
 
-      decision,
+      const usedProvince =
+        record?.province ||
+        province ||
+        "Buenos Aires";
 
-      message:
-        isDirectShipping
-          ? "Tu dirección está dentro de nuestra zona de envío directo."
-          : "Tu dirección está fuera de nuestra zona de envío directo.",
+      // =================================================
+      // COORDENADAS
+      // =================================================
 
-      approximate,
+      let destinationCoords =
+        null;
 
-      distanceKm:
-        roundedDistance,
+      let geocodingMethod =
+        null;
 
-      geocodingMethod,
+      let approximate =
+        clientMarkedApproximate;
 
-      origin: {
-        lat:
-          SHIPPING_ORIGIN.lat,
+      if (
+        Number.isFinite(
+          latitude,
+        ) &&
+        Number.isFinite(
+          longitude,
+        )
+      ) {
+        destinationCoords = {
+          lat: latitude,
 
-        lon:
-          SHIPPING_ORIGIN.lon,
-      },
+          lon: longitude,
 
-      destination: {
-        lat:
-          destinationCoords.lat,
+          displayName: [
+            address,
 
-        lon:
-          destinationCoords.lon,
+            addressNumber,
 
-        displayName:
-          destinationCoords.displayName ||
-          null,
-      },
+            city,
 
-      address: {
-        street:
-          address,
+            postalCode,
+          ]
+            .filter(Boolean)
+            .join(", "),
+        };
 
-        number:
-          addressNumber,
+        geocodingMethod =
+          "selected_address";
+      } else {
+        const results =
+          await geocodeAddress({
+            address,
 
-        betweenStreet1:
-          betweenStreet1 ||
-          null,
+            addressNumber,
 
-        betweenStreet2:
-          betweenStreet2 ||
-          null,
+            city,
 
-        city,
-
-        postalCode,
-
-        province:
-          usedProvince,
-
-        placeId:
-          placeId ||
-          null,
-      },
-
-      shipping,
-
-      record: record
-        ? {
-            postalCode:
-              record.postalCode,
-
-            city:
-              record.city,
+            postalCode,
 
             province:
-              record.province,
+              usedProvince,
+          });
 
-            zone:
-              record.zone,
-          }
-        : null,
-    });
-  } catch (error) {
-    console.error(
-      "Error evaluando envío:",
-      error,
-    );
+        const selected =
+          results[0];
 
-    return res.status(500).json({
-      success: false,
+        if (selected) {
+          destinationCoords = {
+            lat: selected.lat,
 
-      error:
-        "Error interno al calcular el envío.",
+            lon: selected.lon,
 
-      details:
-        process.env.NODE_ENV ===
-        "development"
-          ? error.message
-          : undefined,
-    });
-  }
+            displayName:
+              selected.fullAddress,
+          };
+
+          geocodingMethod =
+            selected.approximate
+              ? "address_approximate"
+              : "address";
+
+          approximate =
+            Boolean(
+              selected.approximate,
+            );
+        }
+      }
+
+      if (
+        !destinationCoords
+      ) {
+        return res.status(422).json({
+          success: false,
+
+          error:
+            "No pudimos localizar esa dirección en Georef.",
+
+          message:
+            "Revisá la calle, número, localidad y código postal.",
+        });
+      }
+
+      // =================================================
+      // DISTANCIA
+      // =================================================
+
+      const distanceKm =
+        haversine(
+          SHIPPING_ORIGIN.lat,
+
+          SHIPPING_ORIGIN.lon,
+
+          destinationCoords.lat,
+
+          destinationCoords.lon,
+        );
+
+      const isDirectShipping =
+        distanceKm <=
+        DIRECT_SHIPPING_MAX_KM;
+
+      let shipping;
+
+      let enviopackQuotes =
+        null;
+
+      // =================================================
+      // ENVÍO DIRECTO
+      // =================================================
+
+      if (
+        isDirectShipping
+      ) {
+        shipping = {
+          id: "directo",
+
+          title:
+            "Envío Aeryx",
+
+          description:
+            "Entrega directa desde nuestro centro de despacho.",
+
+          price: 5000,
+
+          estimatedDelivery:
+            "24-48 horas",
+        };
+      }
+
+      // =================================================
+      // ENVIOPACK
+      // =================================================
+
+      else {
+        const result =
+          await quoteWithEnviopack({
+            province:
+              usedProvince,
+
+            postalCode,
+
+            items,
+          });
+
+        if (result.error) {
+          console.error(
+            "Error cotizando con Enviopack:",
+            result.error,
+          );
+
+          return res.status(502).json({
+            success: false,
+
+            error:
+              "No pudimos cotizar el envío en este momento.",
+
+            details:
+              result.error,
+          });
+        }
+
+        shipping =
+          result.shipping;
+
+        enviopackQuotes =
+          result.allQuotes;
+      }
+
+      return res.json({
+        success: true,
+
+        decision:
+          isDirectShipping
+            ? "near"
+            : "enviopack",
+
+        message:
+          isDirectShipping
+            ? "Tu dirección está dentro de nuestra zona de envío directo."
+            : "Tu dirección está fuera de nuestra zona de envío directo.",
+
+        approximate,
+
+        distanceKm:
+          Number(
+            distanceKm.toFixed(
+              2,
+            ),
+          ),
+
+        geocodingMethod,
+
+        destination: {
+          ...destinationCoords,
+        },
+
+        address: {
+          street: address,
+
+          number:
+            addressNumber,
+
+          city,
+
+          postalCode,
+
+          province:
+            usedProvince,
+        },
+
+        shipping,
+
+        enviopackQuotes,
+      });
+    } catch (error) {
+      console.error(
+        "Error evaluando envío:",
+        error,
+      );
+
+      return res.status(500).json({
+        success: false,
+
+        error:
+          "Error interno al calcular el envío.",
+
+        details:
+          process.env.NODE_ENV ===
+          "development"
+            ? error.message
+            : undefined,
+      });
+    }
+  };
+
+// =====================================================
+// EXPORTS
+// =====================================================
+
+module.exports = {
+  autocompleteAddress:
+    exports.autocompleteAddress,
+
+  evaluateShipping:
+    exports.evaluateShipping,
+
+  buildPackageFromItems,
+
+  buildShipmentPackagesFromItems,
+
+  quoteWithEnviopack,
+
+  cleanStreetName,
 };

@@ -131,6 +131,12 @@ const CustomerSchema = new mongoose.Schema(
       trim: true,
     },
 
+    userId: {
+      type: String,
+      default: null,
+      index: true,
+    },
+
     lastName: {
       type: String,
       required: true,
@@ -159,25 +165,24 @@ const CustomerSchema = new mongoose.Schema(
 
 const ShippingOptionSchema = new mongoose.Schema(
   {
-    id: {
+    id: String,
+    title: String,
+    description: String,
+    price: Number,
+
+    service: {
       type: String,
       default: null,
     },
 
-    title: {
+    carrier: {
       type: String,
-      default: "",
+      default: null,
     },
 
-    description: {
+    carrierName: {
       type: String,
-      default: "",
-    },
-
-    price: {
-      type: Number,
-      default: 0,
-      min: 0,
+      default: null,
     },
   },
   { _id: false },
@@ -192,6 +197,37 @@ const ShippingSchema = new mongoose.Schema(
     method: {
       type: String,
       default: null,
+    },
+    enviopack: {
+      orderId: {
+        type: Number,
+        default: null,
+      },
+
+      shipmentId: {
+        type: Number,
+        default: null,
+      },
+
+      trackingNumber: {
+        type: String,
+        default: null,
+      },
+
+      carrier: {
+        type: String,
+        default: null,
+      },
+
+      service: {
+        type: String,
+        default: null,
+      },
+
+      status: {
+        type: String,
+        default: null,
+      },
     },
 
     manual: {
@@ -248,21 +284,13 @@ const PaymentSchema = new mongoose.Schema(
   {
     method: {
       type: String,
-      enum: [
-        "mp",
-        "Transferencia_bancaria",
-      ],
+      enum: ["mp", "Transferencia_bancaria"],
       required: true,
     },
 
     status: {
       type: String,
-      enum: [
-        "pending",
-        "approved",
-        "rejected",
-        "cancelled",
-      ],
+      enum: ["pending", "approved", "rejected", "cancelled"],
       default: "pending",
     },
 
@@ -324,8 +352,7 @@ const OrderSchema = new mongoose.Schema(
           return items.length > 0;
         },
 
-        message:
-          "La orden debe contener al menos un producto.",
+        message: "La orden debe contener al menos un producto.",
       },
     },
 
@@ -405,7 +432,4 @@ OrderSchema.index({
 // MODEL
 // =====================================================
 
-module.exports = mongoose.model(
-  "Order",
-  OrderSchema,
-);
+module.exports = mongoose.model("Order", OrderSchema);
