@@ -276,21 +276,25 @@ async function createEnviopackOrderForOrder(order) {
 function buildEnviopackProducts(order) {
   const items = Array.isArray(order.items) ? order.items : [];
 
-  return items.map((item) => ({
-    id_externo: item.productId ? item.productId.toString() : null,
+  return items.map((item) => {
+    const hasSku = item.sku && String(item.sku).trim();
 
-    nombre: item.name || "",
+    return {
+      tipo_identificador: hasSku ? "SKU" : "ID", // 👈 obligatorio
 
-    cantidad: Number(item.quantity || 1),
+      // Si es SKU, Enviopack espera el campo `sku`.
+      // Si es ID, espera `id_externo`.
+      ...(hasSku
+        ? { sku: String(item.sku).trim() }
+        : { id_externo: item.productId ? item.productId.toString() : null }),
 
-    precio: Number(item.price || 0),
-
-    subtotal: Number(item.subtotal || 0),
-
-    peso: Number(item.weightKg || 0),
-
-    sku: item.sku || null,
-  }));
+      nombre: item.name || "",
+      cantidad: Number(item.quantity || 1),
+      precio: Number(item.price || 0),
+      subtotal: Number(item.subtotal || 0),
+      peso: Number(item.weightKg || 0),
+    };
+  });
 }
 
 // =====================================================
@@ -1097,56 +1101,56 @@ const createOrder = async (req, res) => {
 
 function isValidMpSignature(req) {
   const xSignature = req.headers["x-signature"];
-
   const xRequestId = req.headers["x-request-id"];
 
   if (!xSignature || !xRequestId) {
+    console.warn("[MP] Faltan headers x-signature o x-request-id");
     return false;
   }
 
   const dataIdFromQuery = req.query["data.id"] || req.query.id;
-
   const dataId = (dataIdFromQuery || req.body?.data?.id || "")
     .toString()
     .toLowerCase();
 
-  let ts;
-
-  let hash;
+  let ts, hash;
 
   xSignature.split(",").forEach((part) => {
     const [key, value] = part.split("=");
-
-    if (key?.trim() === "ts") {
-      ts = value?.trim();
-    }
-
-    if (key?.trim() === "v1") {
-      hash = value?.trim();
-    }
+    if (key?.trim() === "ts") ts = value?.trim();
+    if (key?.trim() === "v1") hash = value?.trim();
   });
 
   if (!ts || !hash) {
+    console.warn("[MP] No se pudo parsear ts/v1 de x-signature:", xSignature);
     return false;
   }
 
   const manifest = `id:${dataId};request-id:${xRequestId};ts:${ts};`;
 
+  const secret = String(process.env.MP_WEBHOOK_SECRET || "").trim(); // 👈 trim
+
   const computedHash = crypto
-    .createHmac("sha256", process.env.MP_WEBHOOK_SECRET)
+    .createHmac("sha256", secret)
     .update(manifest)
     .digest("hex");
+
+  // 🔍 TEMPORAL: sacar estos logs una vez resuelto
+  console.log("[MP DEBUG] manifest:", manifest);
+  console.log("[MP DEBUG] secret configurado:", secret ? `sí (${secret.length} chars)` : "NO");
+  console.log("[MP DEBUG] hash recibido:", hash);
+  console.log("[MP DEBUG] hash calculado:", computedHash);
 
   try {
     return crypto.timingSafeEqual(
       Buffer.from(computedHash, "utf8"),
       Buffer.from(hash, "utf8"),
     );
-  } catch {
+  } catch (e) {
+    console.warn("[MP] timingSafeEqual falló (largos distintos):", e.message);
     return false;
   }
 }
-
 // =====================================================
 // WEBHOOK MERCADO PAGO
 // =====================================================
