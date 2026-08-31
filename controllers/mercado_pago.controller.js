@@ -243,7 +243,7 @@ async function createEnviopackOrderForOrder(order) {
     pagado: order.payment?.status === "approved",
     provincia: provinciaId,
     localidad: address.city || "",
-    productos: buildEnviopackProducts(order), // 👈 agregado
+   // productos: buildEnviopackProducts(order), // 👈 agregado
   });
 
   console.log(
