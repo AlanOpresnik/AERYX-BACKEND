@@ -14,10 +14,7 @@ let cachedToken = null;
 let tokenExpiresAt = 0;
 
 async function requestNewToken() {
-  if (
-    !process.env.ENVIOPACK_API_KEY ||
-    !process.env.ENVIOPACK_SECRET_KEY
-  ) {
+  if (!process.env.ENVIOPACK_API_KEY || !process.env.ENVIOPACK_SECRET_KEY) {
     throw new Error(
       "[Enviopack] Faltan ENVIOPACK_API_KEY o ENVIOPACK_SECRET_KEY",
     );
@@ -49,19 +46,13 @@ async function requestNewToken() {
 
   // Token válido aproximadamente 4 horas.
   // Renovamos 5 minutos antes.
-  tokenExpiresAt =
-    Date.now() +
-    4 * 60 * 60 * 1000 -
-    5 * 60 * 1000;
+  tokenExpiresAt = Date.now() + 4 * 60 * 60 * 1000 - 5 * 60 * 1000;
 
   return cachedToken;
 }
 
 async function getAccessToken() {
-  if (
-    cachedToken &&
-    Date.now() < tokenExpiresAt
-  ) {
+  if (cachedToken && Date.now() < tokenExpiresAt) {
     return cachedToken;
   }
 
@@ -111,17 +102,13 @@ async function quoteHomeDelivery({
     // Si tenés configurado un depósito específico,
     // también lo usamos para cotizar.
     if (process.env.ENVIOPACK_DIRECCION_ENVIO_ID) {
-      params.direccion_envio =
-        process.env.ENVIOPACK_DIRECCION_ENVIO_ID;
+      params.direccion_envio = process.env.ENVIOPACK_DIRECCION_ENVIO_ID;
     }
 
-    const { data } = await axios.get(
-      `${BASE_URL}/cotizar/precio/a-domicilio`,
-      {
-        params,
-        timeout: 10000,
-      },
-    );
+    const { data } = await axios.get(`${BASE_URL}/cotizar/precio/a-domicilio`, {
+      params,
+      timeout: 10000,
+    });
 
     return Array.isArray(data) ? data : [];
   });
@@ -164,17 +151,13 @@ async function quoteCarrier({
     }
 
     if (process.env.ENVIOPACK_DIRECCION_ENVIO_ID) {
-      params.direccion_envio =
-        process.env.ENVIOPACK_DIRECCION_ENVIO_ID;
+      params.direccion_envio = process.env.ENVIOPACK_DIRECCION_ENVIO_ID;
     }
 
-    const { data } = await axios.get(
-      `${BASE_URL}/cotizar/costo`,
-      {
-        params,
-        timeout: 10000,
-      },
-    );
+    const { data } = await axios.get(`${BASE_URL}/cotizar/costo`, {
+      params,
+      timeout: 10000,
+    });
 
     return Array.isArray(data) ? data : [];
   });
@@ -191,10 +174,7 @@ async function quoteHomeDeliveryComplete({
   paquetes,
   servicio = "N",
 }) {
-  const [
-    prices,
-    carrierQuotes,
-  ] = await Promise.all([
+  const [prices, carrierQuotes] = await Promise.all([
     quoteHomeDelivery({
       provinciaId,
       codigoPostal,
@@ -241,98 +221,57 @@ async function quoteHomeDeliveryComplete({
 
 async function createOrder(data) {
   if (!data?.idExterno) {
-    throw new Error(
-      "[Enviopack] Falta idExterno.",
-    );
+    throw new Error("[Enviopack] Falta idExterno.");
   }
 
   const body = {
     id_externo: String(data.idExterno),
-
-    nombre: String(data.nombre || "").slice(
-      0,
-      30,
-    ),
-
-    apellido: String(data.apellido || "").slice(
-      0,
-      30,
-    ),
-
-    email: String(data.email || "").slice(
-      0,
-      100,
-    ),
-
-    telefono: String(data.telefono || "").slice(
-      0,
-      30,
-    ),
-
-    celular: String(data.celular || "").slice(
-      0,
-      30,
-    ),
-
+    nombre: String(data.nombre || "").slice(0, 30),
+    apellido: String(data.apellido || "").slice(0, 30),
+    email: String(data.email || "").slice(0, 100),
+    telefono: String(data.telefono || "").slice(0, 30),
+    celular: String(data.celular || "").slice(0, 30),
     monto: Number(data.monto || 0),
-
-    fecha_alta:
-      data.fechaAlta ||
-      new Date().toISOString(),
-
+    fecha_alta: data.fechaAlta || new Date().toISOString(),
     pagado: Boolean(data.pagado),
-
     provincia: data.provincia || undefined,
-
-    localidad: String(
-      data.localidad || "",
-    ).slice(0, 50),
+    localidad: String(data.localidad || "").slice(0, 50),
+    productos:
+      Array.isArray(data.productos) && data.productos.length
+        ? data.productos
+        : undefined, // 👈 agregado
   };
 
-  // Eliminamos propiedades undefined.
   Object.keys(body).forEach((key) => {
-    if (body[key] === undefined) {
-      delete body[key];
-    }
+    if (body[key] === undefined) delete body[key];
   });
 
-  console.log(
-    "[Enviopack] BODY /pedidos:",
-    JSON.stringify(body, null, 2),
-  );
+  console.log("[Enviopack] BODY /pedidos:", JSON.stringify(body, null, 2));
 
-  return withAuthRequest(
-    async (accessToken) => {
-      const { data: responseData } =
-        await axios.post(
-          `${BASE_URL}/pedidos`,
-          body,
-          {
-            params: {
-              access_token: accessToken,
-            },
+  return withAuthRequest(async (accessToken) => {
+    const { data: responseData } = await axios.post(
+      `${BASE_URL}/pedidos`,
+      body,
+      {
+        params: {
+          access_token: accessToken,
+        },
 
-            headers: {
-              "Content-Type":
-                "application/json",
-            },
+        headers: {
+          "Content-Type": "application/json",
+        },
 
-            timeout: 15000,
-          },
-        );
+        timeout: 15000,
+      },
+    );
 
-      console.log(
-        "[Enviopack] RESPONSE /pedidos:",
-        JSON.stringify(
-          responseData,
-          null,
-          2,
-        ),
-      );
+    console.log(
+      "[Enviopack] RESPONSE /pedidos:",
+      JSON.stringify(responseData, null, 2),
+    );
 
-      return responseData;
-    },
-  );
+    return responseData;
+  });
 }
 
 // =====================================================
@@ -371,63 +310,43 @@ async function createShipment({
   localidad,
 }) {
   if (!pedido) {
-    throw new Error(
-      "[Enviopack] Falta pedido.",
-    );
+    throw new Error("[Enviopack] Falta pedido.");
   }
 
   if (!Array.isArray(paquetes) || !paquetes.length) {
-    throw new Error(
-      "[Enviopack] El envío debe tener al menos un paquete.",
-    );
+    throw new Error("[Enviopack] El envío debe tener al menos un paquete.");
   }
 
   if (!calle) {
-    throw new Error(
-      "[Enviopack] Falta calle.",
-    );
+    throw new Error("[Enviopack] Falta calle.");
   }
 
   if (!numero) {
-    throw new Error(
-      "[Enviopack] Falta número.",
-    );
+    throw new Error("[Enviopack] Falta número.");
   }
 
   if (!codigoPostal) {
-    throw new Error(
-      "[Enviopack] Falta código postal.",
-    );
+    throw new Error("[Enviopack] Falta código postal.");
   }
 
   if (!provincia) {
-    throw new Error(
-      "[Enviopack] Falta provincia.",
-    );
+    throw new Error("[Enviopack] Falta provincia.");
   }
 
   if (!localidad) {
-    throw new Error(
-      "[Enviopack] Falta localidad.",
-    );
+    throw new Error("[Enviopack] Falta localidad.");
   }
 
   if (!destinatario) {
-    throw new Error(
-      "[Enviopack] Falta destinatario.",
-    );
+    throw new Error("[Enviopack] Falta destinatario.");
   }
 
   if (!servicio) {
-    throw new Error(
-      "[Enviopack] Falta servicio.",
-    );
+    throw new Error("[Enviopack] Falta servicio.");
   }
 
   if (!correo) {
-    throw new Error(
-      "[Enviopack] Falta correo/carrier.",
-    );
+    throw new Error("[Enviopack] Falta correo/carrier.");
   }
 
   if (
@@ -440,93 +359,72 @@ async function createShipment({
     );
   }
 
-  return withAuthRequest(
-    async (accessToken) => {
-      const body = {
-        pedido,
+  return withAuthRequest(async (accessToken) => {
+    const body = {
+      pedido,
 
-        destinatario,
+      destinatario,
 
-        observaciones:
-          observaciones || "",
+      observaciones: observaciones || "",
 
-        modalidad,
+      modalidad,
 
-        servicio,
+      servicio,
 
-        correo,
+      correo,
 
-        confirmado,
+      confirmado,
 
-        despacho: "D",
+      despacho: "D",
 
-        paquetes,
+      paquetes,
 
-        calle,
+      calle,
 
-        numero,
+      numero,
 
-        piso: piso || "",
+      piso: piso || "",
 
-        depto: depto || "",
+      depto: depto || "",
 
-        referencia_domicilio:
-          referenciaDomicilio || "",
+      referencia_domicilio: referenciaDomicilio || "",
 
-        codigo_postal: String(
-          codigoPostal,
-        ),
+      codigo_postal: String(codigoPostal),
 
-        provincia,
+      provincia,
 
-        localidad,
-      };
+      localidad,
+    };
 
-      // direccion_envio identifica el DEPÓSITO
-      // de origen, NO la dirección del cliente.
-      //
-      // Para un envío confirmado es obligatorio.
-      const sourceAddressId =
-        direccionEnvio ||
-        process.env
-          .ENVIOPACK_DIRECCION_ENVIO_ID;
+    // direccion_envio identifica el DEPÓSITO
+    // de origen, NO la dirección del cliente.
+    //
+    // Para un envío confirmado es obligatorio.
+    const sourceAddressId =
+      direccionEnvio || process.env.ENVIOPACK_DIRECCION_ENVIO_ID;
 
-      if (sourceAddressId) {
-        body.direccion_envio =
-          sourceAddressId;
-      }
+    if (sourceAddressId) {
+      body.direccion_envio = sourceAddressId;
+    }
 
-      console.log(
-        "[Enviopack] BODY /envios:",
-        JSON.stringify(body, null, 2),
-      );
+    console.log("[Enviopack] BODY /envios:", JSON.stringify(body, null, 2));
 
-      const { data } =
-        await axios.post(
-          `${BASE_URL}/envios`,
-          body,
-          {
-            params: {
-              access_token: accessToken,
-            },
+    const { data } = await axios.post(`${BASE_URL}/envios`, body, {
+      params: {
+        access_token: accessToken,
+      },
 
-            headers: {
-              "Content-Type":
-                "application/json",
-            },
+      headers: {
+        "Content-Type": "application/json",
+      },
 
-            timeout: 15000,
-          },
-        );
+      timeout: 15000,
+    });
 
-      console.log(
-        "[Enviopack] RESPONSE /envios:",
-        JSON.stringify(data, null, 2),
-      );
+    console.log("[Enviopack] RESPONSE /envios:", JSON.stringify(data, null, 2));
 
-      return data;
-    },
-  );
+    return data;
+  });
 }
 
 // =====================================================
@@ -535,28 +433,20 @@ async function createShipment({
 
 async function getShipment(shipmentId) {
   if (!shipmentId) {
-    throw new Error(
-      "[Enviopack] Falta shipmentId.",
-    );
+    throw new Error("[Enviopack] Falta shipmentId.");
   }
 
-  return withAuthRequest(
-    async (accessToken) => {
-      const { data } =
-        await axios.get(
-          `${BASE_URL}/envios/${shipmentId}`,
-          {
-            params: {
-              access_token: accessToken,
-            },
+  return withAuthRequest(async (accessToken) => {
+    const { data } = await axios.get(`${BASE_URL}/envios/${shipmentId}`, {
+      params: {
+        access_token: accessToken,
+      },
 
-            timeout: 10000,
-          },
-        );
+      timeout: 10000,
+    });
 
-      return data;
-    },
-  );
+    return data;
+  });
 }
 
 // =====================================================
@@ -565,71 +455,53 @@ async function getShipment(shipmentId) {
 
 async function getOrder(orderId) {
   if (!orderId) {
-    throw new Error(
-      "[Enviopack] Falta orderId.",
-    );
+    throw new Error("[Enviopack] Falta orderId.");
   }
 
-  return withAuthRequest(
-    async (accessToken) => {
-      const { data } =
-        await axios.get(
-          `${BASE_URL}/pedidos/${orderId}`,
-          {
-            params: {
-              access_token: accessToken,
-            },
+  return withAuthRequest(async (accessToken) => {
+    const { data } = await axios.get(`${BASE_URL}/pedidos/${orderId}`, {
+      params: {
+        access_token: accessToken,
+      },
 
-            timeout: 10000,
-          },
-        );
+      timeout: 10000,
+    });
 
-      return data;
-    },
-  );
+    return data;
+  });
 }
 
 // =====================================================
 // OBTENER IDS POR ID EXTERNO
 // =====================================================
 
-async function getOrderIdsByExternalId(
-  idExterno,
-) {
+async function getOrderIdsByExternalId(idExterno) {
   if (!idExterno) {
-    throw new Error(
-      "[Enviopack] Falta idExterno.",
-    );
+    throw new Error("[Enviopack] Falta idExterno.");
   }
 
-  return withAuthRequest(
-    async (accessToken) => {
-      const { data } =
-        await axios.post(
-          `${BASE_URL}/pedidos/obtener-ids`,
-          {
-            id_externo: String(
-              idExterno,
-            ),
-            plataforma: "web",
-          },
-          {
-            params: {
-              access_token: accessToken,
-            },
+  return withAuthRequest(async (accessToken) => {
+    const { data } = await axios.post(
+      `${BASE_URL}/pedidos/obtener-ids`,
+      {
+        id_externo: String(idExterno),
+        plataforma: "web",
+      },
+      {
+        params: {
+          access_token: accessToken,
+        },
 
-            headers: {
-              "Content-Type":
-                "application/json",
-            },
+        headers: {
+          "Content-Type": "application/json",
+        },
 
-            timeout: 10000,
-          },
-        );
+        timeout: 10000,
+      },
+    );
 
-      return data;
-    },
-  );
+    return data;
+  });
 }
 
 // =====================================================

@@ -290,7 +290,16 @@ const PaymentSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: ["pending", "approved", "rejected", "cancelled"],
+      enum: [
+        "pending",
+        "approved", // 👈 agregado (lo usa el webhook cuando MP aprueba)
+        "paid",
+        "processing",
+        "shipped",
+        "delivered",
+        "cancelled",
+        "refunded", // 👈 agregado (lo usa el webhook en reembolsos)
+      ],
       default: "pending",
     },
 
@@ -389,16 +398,16 @@ const OrderSchema = new mongoose.Schema(
 
     status: {
       type: String,
-
       enum: [
         "pending",
+        "approved", // 👈 agregado (lo usa el webhook cuando MP aprueba)
         "paid",
         "processing",
         "shipped",
         "delivered",
         "cancelled",
+        "refunded", // 👈 agregado (lo usa el webhook en reembolsos)
       ],
-
       default: "pending",
     },
   },

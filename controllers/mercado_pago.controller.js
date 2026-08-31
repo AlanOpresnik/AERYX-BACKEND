@@ -233,26 +233,17 @@ async function createEnviopackOrderForOrder(order) {
 
   const enviopackOrder = await enviopackService.createOrder({
     idExterno: order._id.toString(),
-
     nombre: customer.firstName || "",
-
     apellido: customer.lastName || "",
-
     email: customer.email || "",
-
     telefono: customer.phone || "",
-
     celular: customer.phone || "",
-
     monto: Number(order.totals?.total || 0),
-
     fechaAlta: new Date().toISOString(),
-
     pagado: order.payment?.status === "approved",
-
     provincia: provinciaId,
-
     localidad: address.city || "",
+    productos: buildEnviopackProducts(order), // 👈 agregado
   });
 
   console.log(
@@ -712,7 +703,7 @@ const createOrder = async (req, res) => {
         });
       }
 
-      const unitPrice = 1 //Number(product.price);
+      const unitPrice = 1; //Number(product.price);
 
       if (!Number.isFinite(unitPrice) || unitPrice < 0) {
         return res.status(400).json({
@@ -753,7 +744,7 @@ const createOrder = async (req, res) => {
     // SHIPPING COST
     // =================================================
 
-    const shippingCost =  1 //shipping?.manual ? 0 : Number(shipping?.cost || 0);
+    const shippingCost = 1; //shipping?.manual ? 0 : Number(shipping?.cost || 0);
 
     if (!Number.isFinite(shippingCost) || shippingCost < 0) {
       return res.status(400).json({
