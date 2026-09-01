@@ -243,7 +243,12 @@ async function createEnviopackOrderForOrder(order) {
     pagado: order.payment?.status === "approved",
     provincia: provinciaId,
     localidad: address.city || "",
-   // productos: buildEnviopackProducts(order), // 👈 agregado
+    // productos: buildEnviopackProducts(order),
+    // 👆 Desactivado a propósito: Enviopack rechaza el pedido si el
+    // "identificador" del producto no corresponde a un producto ya
+    // dado de alta en SU catálogo (no acepta el ObjectId de Mongo
+    // ni el formato que armábamos). Reactivar solo después de
+    // confirmar con Enviopack el flujo correcto de alta de productos.
   });
 
   console.log(
@@ -272,6 +277,16 @@ async function createEnviopackOrderForOrder(order) {
 // =====================================================
 // PRODUCTOS
 // =====================================================
+//
+// NOTA: esta función queda definida para cuando se retome el
+// envío de productos a Enviopack, pero por ahora NO se está
+// llamando en ningún lado (ver comentario en
+// createEnviopackOrderForOrder). Según la documentación oficial
+// de Enviopack, cada producto usa el campo `identificador`
+// (no `id_externo`/`sku` por separado), y ese identificador debe
+// corresponder a un producto ya existente en el catálogo de
+// Enviopack cuando `tipo_identificador` es "ID".
+// =====================================================
 
 function buildEnviopackProducts(order) {
   const items = Array.isArray(order.items) ? order.items : [];
@@ -280,19 +295,15 @@ function buildEnviopackProducts(order) {
     const hasSku = item.sku && String(item.sku).trim();
 
     return {
-      tipo_identificador: hasSku ? "SKU" : "ID", // 👈 obligatorio
+      tipo_identificador: hasSku ? "SKU" : "ID",
 
-      // Si es SKU, Enviopack espera el campo `sku`.
-      // Si es ID, espera `id_externo`.
-      ...(hasSku
-        ? { sku: String(item.sku).trim() }
-        : { id_externo: item.productId ? item.productId.toString() : null }),
+      identificador: hasSku
+        ? String(item.sku).trim()
+        : item.productId
+        ? item.productId.toString()
+        : null,
 
-      nombre: item.name || "",
       cantidad: Number(item.quantity || 1),
-      precio: Number(item.price || 0),
-      subtotal: Number(item.subtotal || 0),
-      peso: Number(item.weightKg || 0),
     };
   });
 }
@@ -600,6 +611,8 @@ async function createEnviopackShipmentForOrder(order, confirmado = true) {
 // CREAR ORDER
 // =====================================================
 
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 const createOrder = async (req, res) => {
   try {
     const { customer, shippingAddress, shipping, payment, items } = req.body;
@@ -626,11 +639,11 @@ const createOrder = async (req, res) => {
       });
     }
 
-    if (!customer.email) {
+    if (!customer.email || !EMAIL_REGEX.test(customer.email.trim())) {
       return res.status(400).json({
         success: false,
 
-        message: "El email es obligatorio.",
+        message: "El email ingresado no es válido.",
       });
     }
 
@@ -707,7 +720,7 @@ const createOrder = async (req, res) => {
         });
       }
 
-      const unitPrice = 1; //Number(product.price);
+      const unitPrice = Number(product.price);
 
       if (!Number.isFinite(unitPrice) || unitPrice < 0) {
         return res.status(400).json({
@@ -748,7 +761,7 @@ const createOrder = async (req, res) => {
     // SHIPPING COST
     // =================================================
 
-    const shippingCost = 1; //shipping?.manual ? 0 : Number(shipping?.cost || 0);
+    const shippingCost = shipping?.manual ? 0 : Number(shipping?.cost || 0);
 
     if (!Number.isFinite(shippingCost) || shippingCost < 0) {
       return res.status(400).json({
@@ -1024,9 +1037,9 @@ const createOrder = async (req, res) => {
         back_urls: {
           success: `${process.env.FRONTEND_URL}/checkout/payment/success`,
 
-          failure: `${process.env.FRONTEND_URL}/checkout/payment/success`,
+          failure: `${process.env.FRONTEND_URL}/checkout/payment/failure`,
 
-          pending: `${process.env.FRONTEND_URL}/checkout/payment/success`,
+          pending: `${process.env.FRONTEND_URL}/checkout/payment/pending`,
         },
 
         notification_url: `${process.env.BACKEND_URL}/api/mp/webhook`,
@@ -1128,18 +1141,30 @@ function isValidMpSignature(req) {
 
   const manifest = `id:${dataId};request-id:${xRequestId};ts:${ts};`;
 
-  const secret = String(process.env.MP_WEBHOOK_SECRET || "").trim(); // 👈 trim
+  const secret = String(process.env.MP_WEBHOOK_SECRET || "").trim();
 
   const computedHash = crypto
     .createHmac("sha256", secret)
     .update(manifest)
     .digest("hex");
 
-  // 🔍 TEMPORAL: sacar estos logs una vez resuelto
+  // 🔍 DEBUG — sacar estos logs una vez confirmado que todo funciona.
   console.log("[MP DEBUG] manifest:", manifest);
-  console.log("[MP DEBUG] secret configurado:", secret ? `sí (${secret.length} chars)` : "NO");
+  console.log(
+    "[MP DEBUG] secret configurado:",
+    secret ? `sí (${secret.length} chars)` : "NO",
+  );
   console.log("[MP DEBUG] hash recibido:", hash);
   console.log("[MP DEBUG] hash calculado:", computedHash);
+
+  // Si los largos no coinciden, timingSafeEqual explota. Cortamos acá
+  // con un log claro en vez de dejar que tire una excepción genérica.
+  if (computedHash.length !== hash.length) {
+    console.warn(
+      `[MP] Largo de hash distinto (calculado=${computedHash.length}, recibido=${hash.length}) — el secret probablemente no es el correcto.`,
+    );
+    return false;
+  }
 
   try {
     return crypto.timingSafeEqual(
@@ -1147,10 +1172,11 @@ function isValidMpSignature(req) {
       Buffer.from(hash, "utf8"),
     );
   } catch (e) {
-    console.warn("[MP] timingSafeEqual falló (largos distintos):", e.message);
+    console.warn("[MP] timingSafeEqual falló:", e.message);
     return false;
   }
 }
+
 // =====================================================
 // WEBHOOK MERCADO PAGO
 // =====================================================
@@ -1160,8 +1186,18 @@ const mercadoPagoWebhook = async (req, res) => {
     // =================================================
     // VALIDAR FIRMA
     // =================================================
+    //
+    // ⚠️ MP_SKIP_SIGNATURE_CHECK es SOLO para debug local.
+    // Nunca debe estar en "true" en producción: sin la firma,
+    // cualquiera que conozca esta URL puede simular pagos
+    // aprobados y disparar la creación de envíos en Enviopack.
+    // =================================================
 
-    if (!isValidMpSignature(req)) {
+    if (process.env.MP_SKIP_SIGNATURE_CHECK === "true") {
+      console.warn(
+        "⚠️ [MP] VALIDACIÓN DE FIRMA DESACTIVADA (MP_SKIP_SIGNATURE_CHECK=true) — NO USAR EN PRODUCCIÓN",
+      );
+    } else if (!isValidMpSignature(req)) {
       console.warn("WEBHOOK MP: firma inválida.");
 
       return res.status(401).json({
@@ -1202,9 +1238,37 @@ const mercadoPagoWebhook = async (req, res) => {
 
     const paymentClient = new Payment(mpClient);
 
-    const paymentInfo = await paymentClient.get({
-      id: paymentId,
-    });
+    let paymentInfo;
+
+    try {
+      paymentInfo = await paymentClient.get({
+        id: paymentId,
+      });
+    } catch (error) {
+      const isNotFound =
+        error?.status === 404 ||
+        error?.error === "not_found" ||
+        error?.message?.includes("Payment not found");
+
+      if (isNotFound) {
+        // Esto pasa normalmente cuando MP prueba el webhook desde
+        // el panel con un payment_id ficticio (ej: "123456"). No es
+        // un error real de nuestro lado — respondemos 200 para que
+        // MP no lo marque como caído ni siga reintentando.
+        console.warn(
+          "[MP] Payment no encontrado (probablemente test/simulación):",
+          paymentId,
+        );
+
+        return res.status(200).json({
+          success: true,
+        });
+      }
+
+      // Cualquier otro error sí es real: lo relanzamos para que
+      // caiga en el catch general y quede bien logueado.
+      throw error;
+    }
 
     console.log("[MP] PAYMENT:", JSON.stringify(paymentInfo, null, 2));
 
