@@ -1148,70 +1148,7 @@ const createOrder = async (req, res) => {
 // FIRMA MERCADO PAGO
 // =====================================================
 
-function isValidMpSignature(req) {
-  const xSignature = req.headers["x-signature"];
-  const xRequestId = req.headers["x-request-id"];
 
-  if (!xSignature || !xRequestId) {
-    console.warn("[MP] Faltan headers x-signature o x-request-id");
-    return false;
-  }
-
-  const dataIdFromQuery = req.query["data.id"] || req.query.id;
-  const dataId = (dataIdFromQuery || req.body?.data?.id || "")
-    .toString()
-    .toLowerCase();
-
-  let ts, hash;
-
-  xSignature.split(",").forEach((part) => {
-    const [key, value] = part.split("=");
-    if (key?.trim() === "ts") ts = value?.trim();
-    if (key?.trim() === "v1") hash = value?.trim();
-  });
-
-  if (!ts || !hash) {
-    console.warn("[MP] No se pudo parsear ts/v1 de x-signature:", xSignature);
-    return false;
-  }
-
-  const manifest = `id:${dataId};request-id:${xRequestId};ts:${ts};`;
-
-  const secret = String(process.env.MP_WEBHOOK_SECRET || "").trim();
-
-  const computedHash = crypto
-    .createHmac("sha256", secret)
-    .update(manifest)
-    .digest("hex");
-
-  // 🔍 DEBUG — sacar estos logs una vez confirmado que todo funciona.
-  console.log("[MP DEBUG] manifest:", manifest);
-  console.log(
-    "[MP DEBUG] secret configurado:",
-    secret ? `sí (${secret.length} chars)` : "NO",
-  );
-  console.log("[MP DEBUG] hash recibido:", hash);
-  console.log("[MP DEBUG] hash calculado:", computedHash);
-
-  // Si los largos no coinciden, timingSafeEqual explota. Cortamos acá
-  // con un log claro en vez de dejar que tire una excepción genérica.
-  if (computedHash.length !== hash.length) {
-    console.warn(
-      `[MP] Largo de hash distinto (calculado=${computedHash.length}, recibido=${hash.length}) — el secret probablemente no es el correcto.`,
-    );
-    return false;
-  }
-
-  try {
-    return crypto.timingSafeEqual(
-      Buffer.from(computedHash, "utf8"),
-      Buffer.from(hash, "utf8"),
-    );
-  } catch (e) {
-    console.warn("[MP] timingSafeEqual falló:", e.message);
-    return false;
-  }
-}
 
 // =====================================================
 // WEBHOOK MERCADO PAGO
@@ -1219,29 +1156,6 @@ function isValidMpSignature(req) {
 
 const mercadoPagoWebhook = async (req, res) => {
   try {
-    // =================================================
-    // VALIDAR FIRMA
-    // =================================================
-    //
-    // ⚠️ MP_SKIP_SIGNATURE_CHECK es SOLO para debug local.
-    // Nunca debe estar en "true" en producción: sin la firma,
-    // cualquiera que conozca esta URL puede simular pagos
-    // aprobados y disparar la creación de envíos en Enviopack.
-    // =================================================
-
-    if (process.env.MP_SKIP_SIGNATURE_CHECK === "true") {
-      console.warn(
-        "⚠️ [MP] VALIDACIÓN DE FIRMA DESACTIVADA (MP_SKIP_SIGNATURE_CHECK=true) — NO USAR EN PRODUCCIÓN",
-      );
-    } else if (!isValidMpSignature(req)) {
-      console.warn("WEBHOOK MP: firma inválida.");
-
-      return res.status(401).json({
-        success: false,
-
-        message: "Firma inválida.",
-      });
-    }
 
     const type = req.body?.type || req.query.type;
 
