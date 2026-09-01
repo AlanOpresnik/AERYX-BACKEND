@@ -996,6 +996,42 @@ const createOrder = async (req, res) => {
 
     const totalAmount = subtotal + shippingCost;
 
+    // =================================================
+    // ⚠️ MODO PRUEBA — SOLO PARA TESTING
+    // =================================================
+    //
+    // Si MP_TEST_AMOUNT está seteado (ej: "1"), se le cobra
+    // ese monto fijo a Mercado Pago en vez del total real.
+    //
+    // IMPORTANTE:
+    // - Esto NO modifica order.totals ni orderItems: la orden
+    //   sigue guardando el precio real de los productos, así
+    //   el dashboard, stock y contabilidad quedan correctos.
+    // - Solo cambia lo que efectivamente se le cobra al
+    //   comprador a través de MP.
+    // - Sacá MP_TEST_AMOUNT del .env de producción antes de
+    //   salir a producción, o vas a seguir cobrando $1 real.
+    // =================================================
+
+    const testAmount = process.env.MP_TEST_AMOUNT
+      ? Number(process.env.MP_TEST_AMOUNT)
+      : null;
+
+    const isTestAmount =
+      testAmount !== null && Number.isFinite(testAmount) && testAmount > 0;
+
+    if (isTestAmount) {
+      console.warn(
+        `⚠️ [MP] MP_TEST_AMOUNT activo — cobrando $${testAmount} en vez de $${totalAmount.toFixed(
+          2,
+        )} (SOLO PARA PRUEBAS, order._id=${order._id.toString()})`,
+      );
+    }
+
+    const mpUnitPrice = isTestAmount
+      ? testAmount
+      : Number(totalAmount.toFixed(2));
+
     const mpItems = [
       {
         id: order._id.toString(),
@@ -1010,7 +1046,7 @@ const createOrder = async (req, res) => {
 
         currency_id: "ARS",
 
-        unit_price: Number(totalAmount.toFixed(2)),
+        unit_price: mpUnitPrice,
       },
     ];
 
